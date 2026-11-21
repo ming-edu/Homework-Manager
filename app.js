@@ -2,6 +2,7 @@
 
 const APP_VERSION = 3;
 const ACTIVE_CLASS_KEY = 'zuoyeqing-active-class-v1';
+const UI_PREFERENCES_KEY = 'zuoyeqing-ui-preferences-v1';
 
 const STATUS = {
   passed: { label: '已过关', short: '过关', color: '#2f7e9d', bg: '#e6f5f8' },
@@ -150,9 +151,36 @@ let cloudBootstrapping = false;
 let realtimeRefreshTimer = null;
 
 let state = makeEmptyState();
-const initialView = ['dashboard', 'register', 'feedback', 'analytics', 'settings'].includes(location.hash.slice(1))
+
+function readUiPreferences() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(UI_PREFERENCES_KEY) || '{}');
+    return {
+      view: PAGE_META[parsed.view] ? parsed.view : 'dashboard',
+      selectedTaskByClass: parsed.selectedTaskByClass && typeof parsed.selectedTaskByClass === 'object'
+        ? parsed.selectedTaskByClass
+        : {},
+      scrollByView: parsed.scrollByView && typeof parsed.scrollByView === 'object'
+        ? parsed.scrollByView
+        : {}
+    };
+  } catch {
+    return { view: 'dashboard', selectedTaskByClass: {}, scrollByView: {} };
+  }
+}
+
+function writeUiPreferences(preferences) {
+  try {
+    localStorage.setItem(UI_PREFERENCES_KEY, JSON.stringify(preferences));
+  } catch (error) {
+    console.warn('页面偏好保存失败', error);
+  }
+}
+
+const storedUiPreferences = readUiPreferences();
+const initialView = PAGE_META[location.hash.slice(1)]
   ? location.hash.slice(1)
-  : 'dashboard';
+  : storedUiPreferences.view;
 
 const ui = {
   view: initialView,
@@ -179,6 +207,12 @@ function persist() {
   try {
     if (activeClassId) localStorage.setItem(ACTIVE_CLASS_KEY, activeClassId);
     else localStorage.removeItem(ACTIVE_CLASS_KEY);
+    const preferences = readUiPreferences();
+    preferences.view = ui.view;
+    if (activeClassId && ui.selectedTaskId) {
+      preferences.selectedTaskByClass[activeClassId] = ui.selectedTaskId;
+    }
+    writeUiPreferences(preferences);
   } catch (error) {
     console.warn('本地偏好保存失败', error);
   }
@@ -375,7 +409,11 @@ async function openCloudClass(classId) {
   try {
     const payload = await cloud.loadWorkspace(classId);
     state = mapCloudWorkspace(payload);
-    ui.selectedTaskId = state.tasks[0]?.id || '';
+    const preferences = readUiPreferences();
+    const previousTaskId = preferences.selectedTaskByClass[classId];
+    ui.selectedTaskId = state.tasks.some((task) => task.id === previousTaskId)
+      ? previousTaskId
+      : state.tasks[0]?.id || '';
     ui.statusFilter = 'all';
     ui.query = '';
     ui.groupFilter = 'all';
@@ -383,6 +421,10 @@ async function openCloudClass(classId) {
     persist();
     setAuthMode(false);
     render();
+    const savedScroll = Number(preferences.scrollByView[ui.view] || 0);
+    if (savedScroll > 0) {
+      requestAnimationFrame(() => window.scrollTo({ top: savedScroll, behavior: 'auto' }));
+    }
     cloud.unsubscribeWorkspace();
     cloud.subscribeWorkspace(classId, scheduleCloudRefresh);
   } catch (error) {
@@ -413,6 +455,10 @@ async function refreshCloudWorkspace(silent = false) {
 
 async function enterCloudApp(session) {
   if (!session?.user || cloudBootstrapping) return;
+  if (currentUser?.id === session.user.id && activeClassId) {
+    currentSession = session;
+    return;
+  }
   cloudBootstrapping = true;
   currentSession = session;
   currentUser = session.user;
@@ -548,14 +594,18 @@ function setPageMeta() {
 
 function navigate(view) {
   if (!PAGE_META[view]) return;
+  const viewChanged = ui.view !== view;
   ui.view = view;
-  ui.query = '';
-  ui.statusFilter = 'all';
-  ui.groupFilter = 'all';
+  if (viewChanged) {
+    ui.query = '';
+    ui.statusFilter = 'all';
+    ui.groupFilter = 'all';
+  }
   history.replaceState(null, '', `#${view}`);
+  persist();
   render();
   app.focus({ preventScroll: true });
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (viewChanged) window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function render() {
@@ -1233,6 +1283,7 @@ function renderSettings() {
           <div class="data-actions">
             ${hasClass ? `<button class="secondary-button" type="button" data-action="export-data">${icon('download')}导出当前班级</button>` : ''}
             ${hasClass ? `<button class="secondary-button" type="button" data-action="refresh-cloud">${icon('refresh')}刷新云端数据</button>` : ''}
+            <button class="secondary-button" type="button" data-action="check-cloud-setup">${icon('check-square')}检查云端数据库</button>
             <button class="secondary-button" type="button" data-action="open-class-picker">${icon('grid')}切换或加入班级</button>
             <button class="danger-button" type="button" data-action="sign-out">退出登录</button>
           </div>
@@ -1562,6 +1613,74 @@ function openClassPicker() {
       </div>
     </div>`;
   openModal(modalTemplate('我的班级', '你只能看到自己创建或已加入的班级。', body, '<button class="secondary-button" type="button" data-action="close-modal">关闭</button>', true));
+}
+
+async function openCloudDiagnostics() {
+  openModal(modalTemplate(
+    '云端数据库检查',
+    '检查登录状态、数据表和 RLS 是否可访问。',
+    `<div class="modal-body"><div class="empty-inline">${icon('refresh')}<br>正在检查 Supabase…</div></div>`,
+    '<button class="secondary-button" type="button" data-action="close-modal">关闭</button>',
+    true
+  ));
+  try {
+    const result = await cloud.inspectSetup();
+    const allOk = result.authenticated && result.checks.every((item) => item.ok);
+    const rows = result.checks.map((item) => `
+      <div class="cloud-check-row ${item.ok ? 'is-ok' : 'is-error'}">
+        <span>${item.ok ? icon('check-square') : icon('alert')}</span>
+        <strong>${escapeHtml(item.table)}</strong>
+        <small>${item.ok ? '可访问' : escapeHtml(`${item.code || ''} ${item.message || '访问失败'}`.trim())}</small>
+      </div>`).join('');
+    const body = `
+      <div class="modal-body">
+        <div class="cloud-check-summary ${allOk ? 'is-ok' : 'is-error'}">
+          <strong>${allOk ? '云端配置正常' : '云端配置需要处理'}</strong>
+          <p>${result.authenticated ? `已登录：${escapeHtml(result.email)}` : '认证状态无效，请重新登录'}</p>
+        </div>
+        <div class="cloud-check-list">${rows}</div>
+        ${allOk ? '' : `<div class="cloud-check-guide">
+          <strong>常见修复方法</strong>
+          <p>如果表不存在，请在 Supabase SQL Editor 完整执行 <code>supabase/schema.sql</code>。如果表存在但提示 RLS/GRANT，请重新执行同一脚本中的权限部分。</p>
+        </div>`}
+      </div>`;
+    openModal(modalTemplate('云端数据库检查', '检查结果只显示当前账号可访问的资源。', body, '<button class="secondary-button" type="button" data-action="close-modal">关闭</button>', true));
+  } catch (error) {
+    showToast(error.message || '云端检查失败', 'alert');
+    closeModal();
+  }
+}
+
+function showCloudActionError(error, title = '云端操作失败') {
+  const message = error?.message || '未知错误';
+  const setupRelated = /Supabase|RLS|数据库|表|触发器|权限|schema/i.test(message);
+  const body = `
+    <div class="modal-body">
+      <div class="cloud-check-summary is-error">
+        <strong>${escapeHtml(message)}</strong>
+        <p>请根据下方检查项确认 Supabase 项目是否完整初始化。</p>
+      </div>
+      ${setupRelated ? `<div class="cloud-check-guide" style="margin-top:14px">
+        <strong>建议按顺序检查</strong>
+        <p>1. 在 Supabase SQL Editor 重新执行最新的 <code>supabase/schema.sql</code>。<br>
+        2. 等待约 10 秒，在 Database → API 中刷新 schema cache。<br>
+        3. 确认登录邮箱已经完成验证。<br>
+        4. 点击“检查云端数据库”查看具体哪张表不可访问。</p>
+      </div>` : ''}
+      ${error?.rawMessage ? `<details class="cloud-error-detail">
+        <summary>查看数据库原始错误</summary>
+        <pre>code: ${escapeHtml(error.rawCode || 'unknown')}
+message: ${escapeHtml(error.rawMessage || '')}
+details: ${escapeHtml(error.rawDetails || '')}
+hint: ${escapeHtml(error.rawHint || '')}</pre>
+      </details>` : ''}
+    </div>`;
+  openModal(modalTemplate(
+    title,
+    '数据库会再次验证当前账号权限。',
+    body,
+    `<button class="secondary-button" type="button" data-action="check-cloud-setup">${icon('check-square')}检查云端数据库</button><button class="primary-button" type="button" data-action="close-modal">知道了</button>`
+  ));
 }
 
 function openJoinClassModal() {
@@ -1929,6 +2048,7 @@ function handleClick(event) {
       }
     },
     'refresh-cloud': () => refreshCloudWorkspace(false),
+    'check-cloud-setup': openCloudDiagnostics,
     'sign-out': async () => {
       try {
         cloud?.unsubscribeWorkspace();
@@ -2093,7 +2213,7 @@ async function handleSubmit(event) {
       showToast(`班级已创建，班级号：${created.class_code}`);
     } catch (error) {
       if (submitButton) submitButton.disabled = false;
-      showToast(error.message || '创建班级失败', 'alert');
+      showCloudActionError(error, '创建班级失败');
     }
     return;
   }
@@ -2257,7 +2377,7 @@ async function handleSubmit(event) {
       }
     } catch (error) {
       if (submitButton) submitButton.disabled = false;
-      showToast(error.message || '保存班级失败', 'alert');
+      showCloudActionError(error, activeClassId ? '保存班级失败' : '创建班级失败');
     }
     return;
   }
@@ -2399,6 +2519,17 @@ document.addEventListener('input', (event) => {
   }
 });
 
+let scrollPersistTimer = null;
+window.addEventListener('scroll', () => {
+  window.clearTimeout(scrollPersistTimer);
+  scrollPersistTimer = window.setTimeout(() => {
+    if (!currentUser || document.body.classList.contains('auth-mode')) return;
+    const preferences = readUiPreferences();
+    preferences.scrollByView[ui.view] = Math.round(window.scrollY || 0);
+    writeUiPreferences(preferences);
+  }, 180);
+}, { passive: true });
+
 document.addEventListener('change', async (event) => {
   if (event.target.matches('[data-student-select]')) {
     const studentId = event.target.dataset.studentId;
@@ -2466,8 +2597,17 @@ async function bootstrapCloudApp() {
         renderAuthScreen('login');
         return;
       }
-      if (event === 'SIGNED_IN' && session && !cloudBootstrapping) {
-        enterCloudApp(session);
+      if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+        if (session) currentSession = session;
+        if (session?.user) currentUser = session.user;
+        return;
+      }
+      if (event === 'SIGNED_IN' && session) {
+        if (currentUser?.id === session.user.id) {
+          currentSession = session;
+          return;
+        }
+        if (!cloudBootstrapping) enterCloudApp(session);
       }
     });
     if (currentSession) await enterCloudApp(currentSession);

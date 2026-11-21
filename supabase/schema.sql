@@ -549,6 +549,52 @@ begin
 end;
 $$;
 
+-- 在一个安全定义函数中完成班级创建，避免 INSERT 后 RLS 读取时序导致客户端误判失败。
+create or replace function public.create_class_with_owner(
+  p_name text,
+  p_teacher_name text,
+  p_subject text
+)
+returns table (
+  id uuid,
+  owner_id uuid,
+  name text,
+  teacher_name text,
+  subject text,
+  class_code text,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  created_class public.classes%rowtype;
+begin
+  if auth.uid() is null then
+    raise exception 'AUTH_REQUIRED';
+  end if;
+
+  insert into public.classes (name, teacher_name, subject)
+  values (trim(p_name), trim(p_teacher_name), trim(coalesce(p_subject, '')))
+  returning * into created_class;
+
+  return query
+  select
+    c.id,
+    c.owner_id,
+    c.name,
+    c.teacher_name,
+    c.subject,
+    c.class_code,
+    c.created_at,
+    c.updated_at
+  from public.classes c
+  where c.id = created_class.id;
+end;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- 3. 开启 RLS、收紧权限并创建策略
 -- ---------------------------------------------------------------------------
@@ -798,6 +844,7 @@ using (public.is_class_member(class_id));
 
 revoke all on function public.generate_class_code() from public, anon;
 revoke all on function public.join_class_by_code(text) from public, anon;
+revoke all on function public.create_class_with_owner(text, text, text) from public, anon;
 revoke all on function public.is_class_member(uuid) from public, anon;
 revoke all on function public.is_class_owner(uuid) from public, anon;
 revoke all on function public.can_edit_task(uuid) from public, anon;
@@ -811,6 +858,7 @@ revoke all on function public.write_audit_log() from public, anon, authenticated
 
 grant execute on function public.generate_class_code() to authenticated;
 grant execute on function public.join_class_by_code(text) to authenticated;
+grant execute on function public.create_class_with_owner(text, text, text) to authenticated;
 grant execute on function public.is_class_member(uuid) to authenticated;
 grant execute on function public.is_class_owner(uuid) to authenticated;
 grant execute on function public.can_edit_task(uuid) to authenticated;
@@ -845,6 +893,8 @@ begin
   alter publication supabase_realtime add table public.task_records;
 exception when duplicate_object then null;
 end $$;
+
+notify pgrst, 'reload schema';
 
 commit;
 

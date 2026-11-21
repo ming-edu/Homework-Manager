@@ -3730,6 +3730,130 @@ svg {
   border-top: 1px solid var(--line);
 }
 
+.cloud-check-summary {
+  padding: 15px 16px;
+  border-radius: 13px;
+  background: #eef8f3;
+}
+
+.cloud-check-summary.is-error {
+  background: #faedf0;
+}
+
+.cloud-check-summary strong {
+  display: block;
+  color: var(--mint-strong);
+  font-family: var(--serif);
+  font-size: 16px;
+}
+
+.cloud-check-summary.is-error strong {
+  color: #a34c63;
+}
+
+.cloud-check-summary p {
+  margin: 5px 0 0;
+  color: var(--ink-soft);
+  font-size: 9px;
+}
+
+.cloud-check-list {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cloud-check-row {
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: 20px 120px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfcfe;
+}
+
+.cloud-check-row > span {
+  color: var(--mint-strong);
+}
+
+.cloud-check-row.is-error > span {
+  color: var(--danger);
+}
+
+.cloud-check-row .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.cloud-check-row strong {
+  font-size: 9px;
+}
+
+.cloud-check-row small {
+  overflow: hidden;
+  color: var(--ink-faint);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-check-guide {
+  margin-top: 14px;
+  padding: 13px 15px;
+  border: 1px dashed #e3bdc8;
+  border-radius: 11px;
+  background: #fff8fa;
+}
+
+.cloud-check-guide strong {
+  display: block;
+  color: #a34c63;
+  font-size: 9px;
+}
+
+.cloud-check-guide p {
+  margin: 5px 0 0;
+  color: var(--ink-soft);
+  font-size: 9px;
+  line-height: 1.7;
+}
+
+.cloud-check-guide code {
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: #f2e5e9;
+  font-size: 8px;
+}
+
+.cloud-error-detail {
+  margin-top: 12px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8f9fc;
+}
+
+.cloud-error-detail summary {
+  color: var(--ink-soft);
+  font-size: 9px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cloud-error-detail pre {
+  margin: 9px 0 0;
+  overflow-x: auto;
+  color: #7a4556;
+  font-family: Consolas, monospace;
+  font-size: 8px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .student-chip em {
   color: var(--ink-faint);
   font-size: 8px;

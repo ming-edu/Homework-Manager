@@ -39,7 +39,8 @@
       auth: {
         persistSession: true,
         autoRefreshToken: true,
-        detectSessionInUrl: true
+        detectSessionInUrl: true,
+        storage: window.localStorage
       }
     });
   }
@@ -51,6 +52,7 @@
 
   function normalizeError(error, fallback = '云端操作失败') {
     if (!error) return new Error(fallback);
+    console.error('[Supabase]', error);
     const messageMap = {
       CLASS_NOT_FOUND: '班级号不存在',
       AUTH_REQUIRED: '请先登录',
@@ -59,12 +61,42 @@
       TAG_TASK_CLASS_MISMATCH: '评价标签不属于当前班级'
     };
     const rawMessage = error.message || fallback;
+    const rawCode = String(error.code || '');
+    const rawDetail = `${rawMessage} ${error.details || ''} ${error.hint || ''}`;
+    const withRaw = (message) => {
+      const wrapped = new Error(message);
+      wrapped.rawCode = rawCode;
+      wrapped.rawMessage = rawMessage;
+      wrapped.rawDetails = error.details || '';
+      wrapped.rawHint = error.hint || '';
+      return wrapped;
+    };
+    if (
+      rawCode === '42P01' ||
+      rawCode === 'PGRST205' ||
+      /Could not find the table|relation .* does not exist|schema cache/i.test(rawDetail)
+    ) {
+      return withRaw('Supabase 业务表尚未创建或未被 Data API 识别。请到 SQL Editor 完整执行 supabase/schema.sql，然后刷新 API schema cache。');
+    }
+    if (
+      rawCode === '42501' ||
+      /row-level security|permission denied for table|violates row-level security/i.test(rawDetail)
+    ) {
+      return withRaw('数据库权限或 RLS 策略不完整。请确认 schema.sql 中的 GRANT、ENABLE ROW LEVEL SECURITY 和全部策略已成功执行。');
+    }
+    if (rawCode === 'PGRST116') {
+      return withRaw('班级写入后无法被当前账号读取。通常是 class_members 自动创建触发器缺失，请重新执行最新版 supabase/schema.sql。');
+    }
+    if (rawCode === '401' || /JWT|session.*expired|Not authenticated/i.test(rawMessage)) {
+      return new Error('登录状态无效或已过期，请退出后重新登录。');
+    }
     if (/Invalid login credentials/i.test(rawMessage)) return new Error('邮箱或密码不正确');
     if (/Email not confirmed/i.test(rawMessage)) return new Error('邮箱尚未验证，请先打开验证邮件');
     if (/User already registered/i.test(rawMessage)) return new Error('该邮箱已经注册，请直接登录');
     if (/Password should be at least/i.test(rawMessage)) return new Error('密码至少需要 6 位');
     if (/rate limit/i.test(rawMessage)) return new Error('操作过于频繁，请稍后再试');
-    return new Error(messageMap[rawMessage] || rawMessage);
+    const mappedMessage = messageMap[rawMessage] || rawMessage;
+    return withRaw(rawCode ? `${mappedMessage}（错误码 ${rawCode}）` : mappedMessage);
   }
 
   async function signUp(email, password) {
@@ -140,6 +172,46 @@
     }));
   }
 
+  async function inspectSetup() {
+    const supabase = requireClient();
+    const { data: userData, error: userError } = await supabase.auth.getUser();
+    const tables = ['classes', 'class_members', 'students', 'student_groups', 'tasks', 'evaluation_tags', 'task_records', 'audit_logs'];
+    const checks = [];
+    for (const table of tables) {
+      const { error, status } = await supabase
+        .from(table)
+        .select('*', { count: 'exact', head: true })
+        .limit(1);
+      checks.push({
+        table,
+        ok: !error,
+        status,
+        code: error?.code || '',
+        message: error?.message || ''
+      });
+    }
+    const rpcProbe = await supabase.rpc('create_class_with_owner', {
+      p_name: '',
+      p_teacher_name: '',
+      p_subject: ''
+    });
+    const rpcAvailable = !rpcProbe.error
+      || !['PGRST202', '42883', '42501'].includes(rpcProbe.error.code);
+    checks.push({
+      table: 'create_class_with_owner',
+      ok: rpcAvailable,
+      status: rpcProbe.status || 0,
+      code: rpcProbe.error?.code || '',
+      message: rpcProbe.error?.message || '函数可执行（空参数已由数据库约束拦截）'
+    });
+    return {
+      authenticated: Boolean(userData.user) && !userError,
+      email: userData.user?.email || '',
+      userId: userData.user?.id || '',
+      checks
+    };
+  }
+
   async function loadWorkspace(classId) {
     const supabase = requireClient();
     const classResult = await supabase
@@ -206,26 +278,19 @@
 
   async function createClass({ name, teacherName, subject }) {
     const supabase = requireClient();
-    let result = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      result = await supabase
-        .from('classes')
-        .insert({
-          name,
-          teacher_name: teacherName,
-          subject
-        })
-        .select('id,owner_id,name,teacher_name,subject,class_code,created_at,updated_at')
-        .single();
-      if (!result.error) break;
-      const isClassCodeCollision =
-        result.error.code === '23505' &&
-        `${result.error.message} ${result.error.details || ''}`.includes('class_code');
-      if (!isClassCodeCollision) break;
+    let rpcResult = await supabase
+      .rpc('create_class_with_owner', {
+        p_name: name,
+        p_teacher_name: teacherName,
+        p_subject: subject || ''
+      })
+      .single();
+
+    if (!rpcResult.error) return rpcResult.data;
+    if (['PGRST202', '42883'].includes(rpcResult.error.code)) {
+      throw new Error('数据库函数 create_class_with_owner 尚未生效。请执行最新版 fix-class-creation.sql，并刷新 Data API schema cache。');
     }
-    const { data, error } = result;
-    if (error) throw normalizeError(error, '创建班级失败');
-    return data;
+    throw normalizeError(rpcResult.error, '创建班级失败');
   }
 
   async function updateClass(classId, { name, teacherName, subject }) {
@@ -405,6 +470,7 @@
     getSession,
     onAuthStateChange,
     loadClasses,
+    inspectSetup,
     loadWorkspace,
     createClass,
     updateClass,

@@ -42,6 +42,8 @@ SQL 会创建：
 
 如果 SQL Editor 报告已有对象，请先确认这是一个尚未部署正式数据的项目。该脚本使用 `if not exists` 和 `drop policy if exists`，可重复执行大部分步骤。
 
+如果登录正常但创建班级失败，请先执行 [supabase/check-install.sql](./supabase/check-install.sql) 检查表、RLS 和触发器是否齐全，然后重新执行完整的 `schema.sql`。
+
 ## 3. 开启邮箱登录
 
 进入 **Authentication → Providers → Email**：
@@ -130,6 +132,20 @@ assets/
 ### 加入班级提示班级号不存在
 
 联系班级创建者复制最新 8 位班级号；`0`、`O`、`I` 等字母不属于班级号，班级号只包含数字。
+
+### 登录成功但无法创建班级
+
+最常见原因是 `classes`、`class_members` 表或对应 RLS/触发器没有完整执行。请：
+
+1. 在 SQL Editor 重新执行最新版 `supabase/schema.sql`。
+2. 执行 `supabase/check-install.sql`，确认 8 张表、策略、触发器及 `create_class_with_owner` 函数存在。
+3. 等待约 10 秒，刷新网页并重新登录。
+4. 在“评价设置 → 检查云端数据库”中确认每张表都显示“可访问”。
+
+最新版客户端会优先调用数据库中的 `create_class_with_owner`，让班级写入、成员关系和默认标签处理都在同一个数据库事务中完成。
+
+如果表检查正常仍然不能创建班级，请单独执行
+[supabase/fix-class-creation.sql](./supabase/fix-class-creation.sql)。
 
 ### 协作者看到按钮但修改失败
 

@@ -1,0 +1,38 @@
+{
+  "name": "作业清 · 学生作业管理",
+  "short_name": "作业清",
+  "description": "简洁的学生作业管理、班级反馈与学情记录工具。",
+  "lang": "zh-CN",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f2ec",
+  "theme_color": "#344765",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "assets/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "登记作业",
+      "short_name": "登记",
+      "url": "./index.html#register"
+    },
+    {
+      "name": "学生画像",
+      "short_name": "画像",
+      "url": "./index.html#analytics"
+    }
+  ]
+}

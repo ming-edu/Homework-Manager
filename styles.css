@@ -4834,6 +4834,26 @@ body.modal-open {
     display: none;
   }
 
+  .batch-select-button {
+    flex: 1 1 125px;
+    justify-content: center;
+    color: var(--forest);
+    border-color: #bac9e2;
+    background: #edf2fb;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .batch-select-button span {
+    display: inline;
+  }
+
+  .batch-select-button.is-active {
+    color: #fff;
+    border-color: var(--forest);
+    background: var(--forest);
+  }
+
   .status-batch-heading,
   .status-batch-bottom,
   .detail-batch-top,

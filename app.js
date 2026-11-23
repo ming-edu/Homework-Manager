@@ -1,6 +1,7 @@
 'use strict';
 
 const APP_VERSION = 3;
+const APP_BUILD = '2026.11.23.1';
 const ACTIVE_CLASS_KEY = 'zuoyeqing-active-class-v1';
 const UI_PREFERENCES_KEY = 'zuoyeqing-ui-preferences-v1';
 
@@ -470,6 +471,23 @@ async function refreshCloudWorkspace(silent = false) {
   }
 }
 
+async function forceAppUpdate() {
+  try {
+    if ('caches' in window) {
+      const cacheKeys = await caches.keys();
+      await Promise.all(cacheKeys.map((key) => caches.delete(key)));
+    }
+    if ('serviceWorker' in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map((registration) => registration.unregister()));
+    }
+  } finally {
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set('build', APP_BUILD);
+    window.location.replace(nextUrl.toString());
+  }
+}
+
 async function enterCloudApp(session) {
   if (!session?.user || cloudBootstrapping) return;
   if (currentUser?.id === session.user.id && activeClassId) {
@@ -922,7 +940,7 @@ function renderRegister() {
             <button type="button" class="small-action" data-action="open-display-options">
               ${icon('eye-off')}<span>显示选项</span>
             </button>
-            ${taskEditable ? `<button type="button" class="small-action ${ui.statusBatchMode ? 'is-active' : ''}" data-action="toggle-status-batch">
+            ${taskEditable ? `<button type="button" class="small-action batch-select-button ${ui.statusBatchMode ? 'is-active' : ''}" data-action="toggle-status-batch">
               ${icon('check-square')}<span>${ui.statusBatchMode ? '退出多选' : '批量选择'}</span>
             </button>
             ` : ''}
@@ -1357,13 +1375,14 @@ function renderSettings() {
 
         <section class="card settings-card">
           <div class="section-heading">
-            <div><h2>账号与云端</h2><p>${escapeHtml(currentUser?.email || '')} · ${roleLabel}</p></div>
+            <div><h2>账号与云端</h2><p>${escapeHtml(currentUser?.email || '')} · ${roleLabel} · 版本 ${APP_BUILD}</p></div>
             <span class="stat-icon">${icon('users')}</span>
           </div>
           <div class="data-actions">
             ${hasClass ? `<button class="secondary-button" type="button" data-action="export-data">${icon('download')}导出当前班级</button>` : ''}
             ${hasClass ? `<button class="secondary-button" type="button" data-action="refresh-cloud">${icon('refresh')}刷新云端数据</button>` : ''}
             <button class="secondary-button" type="button" data-action="check-cloud-setup">${icon('check-square')}检查云端数据库</button>
+            <button class="secondary-button" type="button" data-action="force-app-update">${icon('refresh')}刷新到最新版</button>
             <button class="secondary-button" type="button" data-action="open-class-picker">${icon('grid')}切换或加入班级</button>
             <button class="danger-button" type="button" data-action="sign-out">退出登录</button>
           </div>
@@ -2351,6 +2370,7 @@ function handleClick(event) {
       }
     },
     'refresh-cloud': () => refreshCloudWorkspace(false),
+    'force-app-update': forceAppUpdate,
     'check-cloud-setup': openCloudDiagnostics,
     'sign-out': async () => {
       try {
@@ -2989,8 +3009,19 @@ bootstrapCloudApp();
 
 if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch((error) => {
-      console.warn('离线功能注册失败，不影响云端使用。', error);
+    let refreshingForUpdate = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (refreshingForUpdate) return;
+      const refreshKey = 'zuoyeqing-sw-refresh-build';
+      if (sessionStorage.getItem(refreshKey) === APP_BUILD) return;
+      sessionStorage.setItem(refreshKey, APP_BUILD);
+      refreshingForUpdate = true;
+      window.location.reload();
     });
+    navigator.serviceWorker.register(`./sw.js?build=${APP_BUILD}`)
+      .then((registration) => registration.update())
+      .catch((error) => {
+        console.warn('离线功能注册失败，不影响云端使用。', error);
+      });
   });
 }

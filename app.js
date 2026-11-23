@@ -162,10 +162,16 @@ function readUiPreferences() {
         : {},
       scrollByView: parsed.scrollByView && typeof parsed.scrollByView === 'object'
         ? parsed.scrollByView
-        : {}
+        : {},
+      studentDisplayMode: ['both', 'name', 'number'].includes(parsed.studentDisplayMode)
+        ? parsed.studentDisplayMode
+        : 'both',
+      feedbackDisplayMode: ['name', 'number', 'count'].includes(parsed.feedbackDisplayMode)
+        ? parsed.feedbackDisplayMode
+        : 'name'
     };
   } catch {
-    return { view: 'dashboard', selectedTaskByClass: {}, scrollByView: {} };
+    return { view: 'dashboard', selectedTaskByClass: {}, scrollByView: {}, studentDisplayMode: 'both', feedbackDisplayMode: 'name' };
   }
 }
 
@@ -189,10 +195,19 @@ const ui = {
   query: '',
   statusFilter: 'all',
   groupFilter: 'all',
-  hideNames: false,
+  studentDisplayMode: storedUiPreferences.studentDisplayMode,
+  studentDetailSelectedTaskId: '',
+  statusBatchMode: false,
+  statusBatchSelection: new Set(),
+  statusBatchGroups: new Set(),
+  statusBatchStatus: 'passed',
   studentSelection: new Set(),
+  studentDetailBatchMode: false,
+  studentDetailBatchStudentId: '',
+  studentDetailSelection: new Set(),
+  studentDetailBatchStatus: 'passed',
   feedbackOptions: {
-    showNames: true,
+    displayMode: storedUiPreferences.feedbackDisplayMode,
     showReview: true,
     showTags: true
   },
@@ -209,6 +224,8 @@ function persist() {
     else localStorage.removeItem(ACTIVE_CLASS_KEY);
     const preferences = readUiPreferences();
     preferences.view = ui.view;
+    preferences.studentDisplayMode = ui.studentDisplayMode;
+    preferences.feedbackDisplayMode = ui.feedbackOptions.displayMode;
     if (activeClassId && ui.selectedTaskId) {
       preferences.selectedTaskByClass[activeClassId] = ui.selectedTaskId;
     }
@@ -849,6 +866,11 @@ function renderRegister() {
 
   const counts = countsForTask(task.id);
   const filtered = state.students.filter((student) => studentMatchesFilters(task, student));
+  const taskEditable = canEditTask(task);
+  const batchGroupOptions = [
+    ...state.groups,
+    { id: 'ungrouped', name: '未分组', color: 'gray' }
+  ];
 
   return `
     <div class="view register-layout">
@@ -897,14 +919,53 @@ function renderRegister() {
                 <option value="ungrouped" ${ui.groupFilter === 'ungrouped' ? 'selected' : ''}>未分组</option>
               </select>
             </label>
-            <button type="button" class="small-action ${ui.hideNames ? 'is-active' : ''}" data-action="toggle-names">
-              ${icon('eye-off')}<span>${ui.hideNames ? '显示姓名' : '隐藏姓名'}</span>
+            <button type="button" class="small-action" data-action="open-display-options">
+              ${icon('eye-off')}<span>显示选项</span>
             </button>
-            <button type="button" class="small-action ${ui.statusFilter !== 'all' ? 'is-active' : ''}" data-action="clear-filter">
-              ${icon('filter')}<span>${ui.statusFilter === 'all' ? '全部状态' : '清除筛选'}</span>
+            ${taskEditable ? `<button type="button" class="small-action ${ui.statusBatchMode ? 'is-active' : ''}" data-action="toggle-status-batch">
+              ${icon('check-square')}<span>${ui.statusBatchMode ? '退出多选' : '批量选择'}</span>
             </button>
+            ` : ''}
+            <label class="status-filter-wrap" title="按作业状态筛选">
+              ${icon('filter')}
+              <select id="status-filter" aria-label="按作业状态筛选">
+                <option value="all" ${ui.statusFilter === 'all' ? 'selected' : ''}>全部状态</option>
+                ${Object.entries(STATUS).map(([status, item]) => `<option value="${status}" ${ui.statusFilter === status ? 'selected' : ''}>${item.label}</option>`).join('')}
+              </select>
+            </label>
           </div>
         </div>
+
+        ${ui.statusBatchMode && taskEditable ? `
+          <div class="status-batch-panel">
+            <div class="status-batch-heading">
+              <div><strong>批量登记</strong><span>已选择 ${ui.statusBatchSelection.size} 名学生</span></div>
+              <div>
+                <button type="button" class="text-link" data-action="select-visible-students">全选当前名单</button>
+                <button type="button" class="text-link" data-action="clear-status-batch">清空选择</button>
+              </div>
+            </div>
+            <div class="status-batch-groups">
+              <span>按小组选择</span>
+              ${batchGroupOptions.map((group) => {
+                const members = state.students.filter((student) => (
+                  group.id === 'ungrouped' ? !student.groupId : student.groupId === group.id
+                ));
+                const active = members.length > 0 && members.every((student) => ui.statusBatchSelection.has(student.id));
+                return `
+                <button type="button" class="batch-group-chip ${active ? 'is-active' : ''}" data-action="toggle-status-batch-group" data-group-id="${escapeHtml(group.id)}">
+                  ${escapeHtml(group.name)}
+                </button>`;
+              }).join('')}
+            </div>
+            <div class="status-batch-bottom">
+              <div class="batch-status-options">
+                ${Object.entries(STATUS).map(([status, item]) => `
+                  <button type="button" class="batch-status-option ${ui.statusBatchStatus === status ? 'is-active' : ''}" data-action="set-status-batch-value" data-status="${status}" style="--batch-color:${item.color};--batch-bg:${item.bg}">${item.label}</button>`).join('')}
+              </div>
+              <button type="button" class="primary-button" data-action="apply-status-batch">${icon('check-square')}应用到已选学生</button>
+            </div>
+          </div>` : ''}
 
         <div class="roster-grid" id="roster-grid">
           ${state.students.length ? state.students.map((student) => renderStudentTile(task, student)).join('') : `
@@ -934,11 +995,16 @@ function renderStudentTile(task, student) {
   const matches = studentMatchesFilters(task, student);
   const tags = record.tags.map(getTag).filter(Boolean);
   const taskEditable = canEditTask(task);
+  const batchSelected = ui.statusBatchSelection.has(student.id);
+  const numberText = String(student.number).padStart(2, '0');
+  const showBoth = ui.studentDisplayMode === 'both';
+  const showNumber = ui.studentDisplayMode === 'number';
   return `
-    <button type="button" class="student-tile status-${record.status} ${ui.hideNames ? 'hide-name' : ''}" data-action="${taskEditable ? 'evaluate' : 'student-profile'}" data-student-id="${escapeHtml(student.id)}" data-name="${escapeHtml(student.name)}" data-number="${student.number}" data-status="${record.status}" data-group="${escapeHtml(student.groupId || '')}" ${matches ? '' : 'hidden'}>
-      <span class="student-number">${String(student.number).padStart(2, '0')}</span>
+    <button type="button" class="student-tile status-${record.status} ${batchSelected ? 'is-batch-selected' : ''} display-${ui.studentDisplayMode}" data-action="${ui.statusBatchMode && taskEditable ? 'toggle-status-batch-student' : taskEditable ? 'evaluate' : 'student-profile'}" data-student-id="${escapeHtml(student.id)}" data-name="${escapeHtml(student.name)}" data-number="${student.number}" data-status="${record.status}" data-group="${escapeHtml(student.groupId || '')}" ${matches ? '' : 'hidden'}>
+      ${showBoth ? `<span class="student-number">${numberText}</span>` : ''}
       ${tags.length ? `<span class="tile-tags"><span class="tile-tag-count"><span>${tags.length}</span></span></span>` : ''}
-      <span class="student-name">${escapeHtml(student.name)}</span>
+      ${ui.statusBatchMode && taskEditable ? `<span class="tile-selection">${batchSelected ? icon('check-square') : ''}</span>` : ''}
+      <span class="student-name">${showNumber ? numberText : escapeHtml(student.name)}</span>
       <span class="student-status-text"><i></i>${STATUS[record.status].short}</span>
     </button>`;
 }
@@ -952,9 +1018,13 @@ function buildFeedbackText(task, options = ui.feedbackOptions) {
   const excused = state.students.filter((student) => getRecord(task.id, student.id).status === 'excused');
   const submitted = counts.passed + counts.review;
   const percent = Math.round((counts.passed / Math.max(1, total)) * 100);
+  const displayMode = options.displayMode || 'name';
   const nameList = (students) => {
     if (!students.length) return '无';
-    if (!options.showNames) return `共 ${students.length} 人`;
+    if (displayMode === 'count') return `共 ${students.length} 人`;
+    if (displayMode === 'number') {
+      return students.map((student) => String(student.number).padStart(2, '0')).join('、');
+    }
     return students.map((student) => student.name).join('、');
   };
 
@@ -1005,8 +1075,17 @@ function renderFeedback() {
           <span class="feedback-badge">${icon('sparkles')} 当前作业：${escapeHtml(task.title)}</span>
           <h2>把作业情况整理成<br>清楚、温和的反馈。</h2>
           <p>系统按“已过关、待订正、未提交、请假”自动归类，并把本次评价标签一起汇总。文案生成后可立即复制到班级群。</p>
+          <div class="feedback-display-picker">
+            <div><strong>学生信息格式</strong><small>仅影响反馈文案</small></div>
+            <div class="segmented-options">
+              ${[
+                ['name', '显示姓名'],
+                ['number', '显示学号'],
+                ['count', '只显示人数']
+              ].map(([mode, label]) => `<button type="button" class="${ui.feedbackOptions.displayMode === mode ? 'is-active' : ''}" data-action="set-feedback-display-mode" data-mode="${mode}">${label}</button>`).join('')}
+            </div>
+          </div>
           <div class="feedback-options">
-            ${feedbackOption('showNames', '展示学生姓名', '关闭后会以人数代替具体名单', ui.feedbackOptions.showNames)}
             ${feedbackOption('showReview', '列出待订正学生', '便于家长直接找到需要跟进的孩子', ui.feedbackOptions.showReview)}
             ${feedbackOption('showTags', '附带个性化标签', '汇总表扬项和提示项，让反馈更有依据', ui.feedbackOptions.showTags)}
           </div>
@@ -1038,7 +1117,7 @@ function renderFeedback() {
       <div class="insight-strip">
         ${insightCard('trophy', '值得表扬', `${state.students.filter((student) => getRecord(task.id, student.id).tags.some((id) => getTag(id)?.score > 0)).length} 人获得加分标签`, '#2f7e9d', '#e6f5f8')}
         ${insightCard('alert', '需要跟进', `${counts.review + counts.missing} 人需要补交或订正`, '#bd5d77', '#faecf0')}
-        ${insightCard('message', '沟通已就绪', '关闭姓名展示即可生成隐私友好版本', '#7765b0', '#f1eef9')}
+        ${insightCard('message', '沟通已就绪', '可切换姓名、学号或纯人数版本', '#7765b0', '#f1eef9')}
       </div>
     </div>`;
 }
@@ -1126,10 +1205,11 @@ function renderAnalytics() {
 
   const heatCells = summaries.map(({ student, metrics }) => {
     const colors = heatColors(metrics.overdue);
+    const numberText = String(student.number).padStart(2, '0');
     return `
-      <button type="button" class="heat-cell ${ui.hideNames ? 'hide-name' : ''}" data-action="student-profile" data-student-id="${escapeHtml(student.id)}" style="--heat-color:${colors.color};--heat-ink:${colors.ink};--heat-bg:${colors.bg};--heat-shadow:${colors.shadow};--heat-glow:${colors.glow}">
-        <span class="heat-cell-top"><strong>${String(student.number).padStart(2, '0')}</strong><span>XP ${metrics.xp}</span></span>
-        <span class="student-name">${escapeHtml(student.name)}</span>
+      <button type="button" class="heat-cell display-${ui.studentDisplayMode}" data-action="student-profile" data-student-id="${escapeHtml(student.id)}" style="--heat-color:${colors.color};--heat-ink:${colors.ink};--heat-bg:${colors.bg};--heat-shadow:${colors.shadow};--heat-glow:${colors.glow}">
+        <span class="heat-cell-top">${ui.studentDisplayMode !== 'name' ? `<strong>${numberText}</strong>` : '<span></span>'}<span>XP ${metrics.xp}</span></span>
+        <span class="student-name">${ui.studentDisplayMode === 'number' ? numberText : escapeHtml(student.name)}</span>
         <small>${metrics.overdue ? `${metrics.overdue} 次未过关` : '全部已过关'}</small>
       </button>`;
   }).join('');
@@ -1166,7 +1246,7 @@ function renderAnalytics() {
     <div class="view analytics-view">
       <div class="analytics-head">
         <div><h2>全班作业热力图</h2><p>颜色越深代表未过关次数越多。点击任意学生查看完整档案。</p></div>
-        <button type="button" class="secondary-button" data-action="toggle-names">${icon('eye-off')}${ui.hideNames ? '显示姓名' : '隐藏姓名'}</button>
+        <button type="button" class="secondary-button" data-action="open-display-options">${icon('eye-off')}显示选项</button>
       </div>
 
       <section class="card heatmap-card">
@@ -1357,9 +1437,9 @@ function closeModal() {
   ui.confirmCallback = null;
 }
 
-function openEvaluate(studentId) {
+function openEvaluate(studentId, taskId = ui.selectedTaskId, returnToDetail = false) {
   const student = getStudent(studentId);
-  const task = getTask();
+  const task = state.tasks.find((item) => item.id === taskId) || getTask();
   if (!student || !task) return;
   if (!canEditTask(task)) {
     showToast('这是其他教师布置的作业，你只能查看，不能修改状态', 'eye-off');
@@ -1371,11 +1451,16 @@ function openEvaluate(studentId) {
       ${escapeHtml(tag.label)} <b>${tag.score >= 0 ? '+' : ''}${tag.score} XP</b>
     </button>`).join('');
   const body = `
-    <form id="evaluate-form" data-student-id="${escapeHtml(student.id)}" data-task-id="${escapeHtml(task.id)}">
+    <form id="evaluate-form" class="evaluate-form" data-student-id="${escapeHtml(student.id)}" data-task-id="${escapeHtml(task.id)}" data-return-detail="${returnToDetail ? 'true' : 'false'}">
       <div class="modal-body">
         <div class="modal-student">
           <span class="student-mini-avatar" style="${avatarStyle(student.id)}">${escapeHtml(student.name.slice(0, 1))}</span>
           <span><strong>${escapeHtml(student.name)}</strong><small>学号 ${String(student.number).padStart(2, '0')} · ${escapeHtml(task.title)}</small></span>
+        </div>
+        <div class="evaluate-task-context">
+          <span>本次修改</span>
+          <strong>${escapeHtml(task.title)}</strong>
+          <small>${formatShortDate(task.date)}</small>
         </div>
         <div class="form-group">
           <span class="form-group-title">${icon('check-square')}作业状态</span>
@@ -1397,13 +1482,14 @@ function openEvaluate(studentId) {
           <label for="teacher-note">教师备注</label>
           <textarea id="teacher-note" class="note-input" name="note" maxlength="300" placeholder="可记录需要家长了解的具体表现，仅在个人档案中展示。">${escapeHtml(record.note)}</textarea>
         </div>
+        <div class="evaluate-save-row">
+          <button TYPE="button" class="ghost-button left" data-action="student-profile-from-modal" data-student-id="${escapeHtml(student.id)}">${icon('user')}查看完整档案</button>
+          <button type="button" class="secondary-button" data-action="close-modal">取消</button>
+          <button type="submit" class="primary-button">${icon('save')}保存此次作业状态</button>
+        </div>
       </div>
     </form>`;
-  const footer = `
-    <button TYPE="button" class="ghost-button left" data-action="student-profile-from-modal" data-student-id="${escapeHtml(student.id)}">查看完整档案</button>
-    <button type="button" class="secondary-button" data-action="close-modal">取消</button>
-    <button type="submit" form="evaluate-form" class="primary-button">${icon('save')}保存本次评价</button>`;
-  openModal(modalTemplate('登记个人作业', '状态、标签与备注会一起保存。', body, footer));
+  openModal(modalTemplate('登记个人作业', '状态、标签与备注会一起保存。', body, ''));
 }
 
 function openTaskModal(taskId = '') {
@@ -1440,17 +1526,40 @@ function openTaskModal(taskId = '') {
 function openStudentDetail(studentId) {
   const student = getStudent(studentId);
   if (!student) return;
+  if (ui.studentDetailBatchStudentId !== student.id) {
+    ui.studentDetailBatchMode = false;
+    ui.studentDetailBatchStudentId = student.id;
+    ui.studentDetailSelection.clear();
+    ui.studentDetailBatchStatus = 'passed';
+    ui.studentDetailSelectedTaskId = getTask()?.id || state.tasks[0]?.id || '';
+  }
+  if (!state.tasks.some((task) => task.id === ui.studentDetailSelectedTaskId)) {
+    ui.studentDetailSelectedTaskId = getTask()?.id || state.tasks[0]?.id || '';
+  }
   const metrics = studentMetrics(student.id);
-  const history = metrics.records.slice(0, 7).map(({ task, record }) => {
+  const editableTaskCount = metrics.records.filter(({ task }) => canEditTask(task)).length;
+  const selectedDetailTask = state.tasks.find((task) => task.id === ui.studentDetailSelectedTaskId);
+  const canEditSelectedDetailTask = canEditTask(selectedDetailTask);
+  const history = metrics.records.map(({ task, record }) => {
     const tags = record.tags.map(getTag).filter(Boolean);
     const editable = canEditTask(task);
+    const selected = ui.studentDetailSelection.has(task.id);
+    const focused = ui.studentDetailSelectedTaskId === task.id;
+    const actionAttrs = editable
+      ? ui.studentDetailBatchMode
+        ? `data-action="toggle-student-detail-task" data-task-id="${escapeHtml(task.id)}" title="点击选择该作业"`
+        : `data-action="select-student-detail-task" data-task-id="${escapeHtml(task.id)}" title="先选择这项作业，再修改状态"`
+      : `data-action="select-student-detail-task" data-task-id="${escapeHtml(task.id)}" title="选择该项作业查看，当前账号没有修改权限"`;
     return `
-      <button type="button" class="history-row" ${editable ? `data-action="cycle-student-task" data-student-id="${escapeHtml(student.id)}" data-task-id="${escapeHtml(task.id)}" title="点击切换作业状态"` : 'disabled title="这是其他教师布置的作业，只能查看"'} >
+      <button type="button" class="history-row ${selected ? 'is-batch-selected' : ''} ${focused ? 'is-detail-selected' : ''}" ${actionAttrs}>
+        ${ui.studentDetailBatchMode && editable
+          ? `<span class="history-checkbox">${selected ? icon('check-square') : ''}</span>`
+          : `<span class="history-focus-dot">${focused ? icon('check-square') : ''}</span>`}
         <time>${formatShortDate(task.date)}</time>
         <strong>${escapeHtml(task.title)}</strong>
         ${tags.slice(0, 1).map((tag) => `<span class="detail-tag" style="${tagStyle(tag)}">${escapeHtml(tag.label)}</span>`).join('')}
         <span class="detail-tag" style="--tag-color:${STATUS[record.status].color};--tag-bg:${STATUS[record.status].bg}">${STATUS[record.status].label}</span>
-        ${editable ? icon('refresh', 'history-cycle-icon') : icon('eye-off', 'history-cycle-icon')}
+        ${ui.studentDetailBatchMode ? '' : editable ? icon('refresh', 'history-cycle-icon') : icon('eye-off', 'history-cycle-icon')}
       </button>`;
   }).join('');
   const positiveCounts = state.tags.positive.map((tag) => ({
@@ -1469,8 +1578,29 @@ function openStudentDetail(studentId) {
         <div class="detail-stat" style="--stat-bg:#f2eff9;--stat-color:#7964a5"><strong>${metrics.review}</strong><small>待订正</small></div>
         <div class="detail-stat" style="--stat-bg:#faecf0;--stat-color:#bd5d77"><strong>${metrics.missing}</strong><small>未提交</small></div>
       </div>
+      ${ui.studentDetailBatchMode ? `<div class="detail-batch-panel">
+        <div class="detail-batch-top">
+          <div><strong>已选择 ${ui.studentDetailSelection.size} 项作业</strong><small>只会修改当前学生、且你有编辑权限的作业</small></div>
+          <div>
+            <button type="button" class="text-link" data-action="select-all-detail-tasks" data-student-id="${escapeHtml(student.id)}">全选可编辑作业</button>
+            <button type="button" class="text-link" data-action="clear-detail-task-selection">清空</button>
+          </div>
+        </div>
+        <div class="detail-batch-actions">
+          <div class="batch-status-options">
+            ${Object.entries(STATUS).map(([status, item]) => `
+              <button type="button" class="batch-status-option ${ui.studentDetailBatchStatus === status ? 'is-active' : ''}" data-action="set-detail-batch-status" data-status="${status}" style="--batch-color:${item.color};--batch-bg:${item.bg}">${item.label}</button>`).join('')}
+          </div>
+          <button type="button" class="primary-button" data-action="apply-detail-batch" data-student-id="${escapeHtml(student.id)}">${icon('check-square')}批量修改</button>
+        </div>
+      </div>` : ''}
       <div class="detail-section">
-        <h3>作业轨迹 <span class="detail-hint">可编辑的作业可点击切换状态</span></h3>
+        <h3>作业轨迹 <span class="detail-hint">${ui.studentDetailBatchMode ? '点击选择多项作业' : '先选择一项作业，再点击底部修改按钮'}</span></h3>
+        ${!ui.studentDetailBatchMode && selectedDetailTask ? `<div class="detail-selected-summary">
+          <span>当前选择</span>
+          <strong>${escapeHtml(selectedDetailTask.title)}</strong>
+          <small>${formatShortDate(selectedDetailTask.date)} · ${canEditSelectedDetailTask ? '可修改' : '只读'}</small>
+        </div>` : ''}
         <div class="detail-history">${history || '<div class="empty-inline">暂无作业记录</div>'}</div>
       </div>
       <div class="detail-section">
@@ -1487,9 +1617,14 @@ function openStudentDetail(studentId) {
   const footer = `
     <span class="left save-hint">${icon('trophy')}累计评价积分 ${metrics.xp >= 0 ? '+' : ''}${metrics.xp} XP</span>
     <button class="secondary-button" type="button" data-action="close-modal">关闭</button>
-    ${getTask() && canEditTask(getTask())
-      ? `<button class="primary-button" type="button" data-action="evaluate" data-student-id="${escapeHtml(student.id)}">${icon('edit')}修改本次登记</button>`
-      : '<span class="save-hint">当前作业为只读</span>'}`;
+    ${editableTaskCount > 1 ? `<button class="secondary-button" type="button" data-action="toggle-student-detail-batch" data-student-id="${escapeHtml(student.id)}">${icon('check-square')}${ui.studentDetailBatchMode ? '退出多选' : '批量改状态'}</button>` : ''}
+    ${ui.studentDetailBatchMode
+      ? '<span class="save-hint">选择多项后使用上方批量修改</span>'
+      : canEditSelectedDetailTask
+        ? `<button class="primary-button" type="button" data-action="evaluate-selected" data-student-id="${escapeHtml(student.id)}" data-task-id="${escapeHtml(selectedDetailTask.id)}">${icon('edit')}修改所选作业</button>`
+        : selectedDetailTask
+          ? '<span class="save-hint">所选举作业只读，不能修改</span>'
+          : '<span class="save-hint">请先选择一项作业</span>'}`;
   openModal(modalTemplate('个人作业档案', '从单次登记沉淀出连续的学习轨迹。', body, footer, true));
 }
 
@@ -1613,6 +1748,174 @@ function openClassPicker() {
       </div>
     </div>`;
   openModal(modalTemplate('我的班级', '你只能看到自己创建或已加入的班级。', body, '<button class="secondary-button" type="button" data-action="close-modal">关闭</button>', true));
+}
+
+function openDisplayOptions() {
+  const options = [
+    ['both', '姓名 + 学号', '学生卡片同时显示姓名和学号'],
+    ['name', '只显示姓名', '适合家长群和不涉及学号的场景'],
+    ['number', '只显示学号', '适合投屏和公开登记']
+  ];
+  const body = `
+    <div class="modal-body">
+      <div class="display-mode-options">
+        ${options.map(([mode, title, detail]) => `
+          <button type="button" class="display-mode-option ${ui.studentDisplayMode === mode ? 'is-active' : ''}" data-action="set-student-display-mode" data-mode="${mode}">
+            <span class="display-mode-preview preview-${mode}">${mode === 'name' ? '林小满' : mode === 'number' ? '08' : '<small>08</small>林小满'}</span>
+            <strong>${title}</strong>
+            <small>${detail}</small>
+          </button>`).join('')}
+      </div>
+      <p class="confirm-message" style="margin-top:14px">该设置会同时应用到作业登记和学生画像。班级反馈的文字展示方式在反馈页面单独设置。</p>
+    </div>`;
+  openModal(modalTemplate('学生展示方式', '选择屏幕上显示学生信息的方式。', body, '<button class="secondary-button" type="button" data-action="close-modal">完成</button>'));
+}
+
+function clearStatusBatchSelection() {
+  ui.statusBatchSelection.clear();
+  ui.statusBatchGroups.clear();
+}
+
+function toggleStatusBatchStudent(studentId) {
+  if (ui.statusBatchSelection.has(studentId)) ui.statusBatchSelection.delete(studentId);
+  else ui.statusBatchSelection.add(studentId);
+  render();
+}
+
+function toggleStatusBatchGroup(groupId) {
+  const groupStudents = state.students.filter((student) => (
+    groupId === 'ungrouped' ? !student.groupId : student.groupId === groupId
+  ));
+  if (!groupStudents.length) {
+    showToast('该小组暂时没有学生', 'users');
+    return;
+  }
+  const allSelected = groupStudents.every((student) => ui.statusBatchSelection.has(student.id));
+  groupStudents.forEach((student) => {
+    if (allSelected) ui.statusBatchSelection.delete(student.id);
+    else ui.statusBatchSelection.add(student.id);
+  });
+  if (allSelected) ui.statusBatchGroups.delete(groupId);
+  else ui.statusBatchGroups.add(groupId);
+  render();
+}
+
+function selectVisibleStudentsForBatch() {
+  const task = getTask();
+  if (!task) return;
+  state.students
+    .filter((student) => studentMatchesFilters(task, student))
+    .forEach((student) => ui.statusBatchSelection.add(student.id));
+  render();
+}
+
+async function applyStatusBatch() {
+  const task = getTask();
+  if (!task || !canEditTask(task)) {
+    showToast('当前作业只能查看，不能批量修改', 'eye-off');
+    return;
+  }
+  const selectedStudents = state.students.filter((student) => ui.statusBatchSelection.has(student.id));
+  if (!selectedStudents.length) {
+    showToast('请先选择学生或小组', 'users');
+    return;
+  }
+  try {
+    for (let index = 0; index < selectedStudents.length; index += 8) {
+      const chunk = selectedStudents.slice(index, index + 8);
+      const savedRows = await Promise.all(chunk.map((student) => {
+        const record = getRecord(task.id, student.id);
+        return cloud.saveRecord({
+          task_id: task.id,
+          student_id: student.id,
+          status: ui.statusBatchStatus,
+          tag_ids: record.tags,
+          note: record.note
+        });
+      }));
+      savedRows.forEach((saved, rowIndex) => {
+        const student = chunk[rowIndex];
+        const record = getRecord(task.id, student.id);
+        record.id = saved.id;
+        record.status = saved.status;
+        record.tags = saved.tag_ids || [];
+        record.note = saved.note || '';
+        record.updatedBy = saved.updated_by;
+      });
+    }
+    const count = selectedStudents.length;
+    clearStatusBatchSelection();
+    render();
+    showToast(`已将 ${count} 名学生设为“${STATUS[ui.statusBatchStatus].label}”`);
+  } catch (error) {
+    showToast(error.message || '批量保存失败，正在同步云端数据', 'alert');
+    await refreshCloudWorkspace(true);
+  }
+}
+
+function toggleStudentDetailBatch(studentId) {
+  if (ui.studentDetailBatchStudentId !== studentId) {
+    ui.studentDetailBatchStudentId = studentId;
+    ui.studentDetailSelection.clear();
+    ui.studentDetailBatchStatus = 'passed';
+  }
+  ui.studentDetailBatchMode = !ui.studentDetailBatchMode;
+  if (!ui.studentDetailBatchMode) ui.studentDetailSelection.clear();
+  openStudentDetail(studentId);
+}
+
+function toggleStudentDetailTask(taskId) {
+  if (ui.studentDetailSelection.has(taskId)) ui.studentDetailSelection.delete(taskId);
+  else ui.studentDetailSelection.add(taskId);
+  openStudentDetail(ui.studentDetailBatchStudentId);
+}
+
+function selectAllEditableDetailTasks(studentId) {
+  const metrics = studentMetrics(studentId);
+  metrics.records
+    .filter(({ task }) => canEditTask(task))
+    .forEach(({ task }) => ui.studentDetailSelection.add(task.id));
+  openStudentDetail(studentId);
+}
+
+async function applyStudentDetailBatch(studentId) {
+  const selectedTasks = state.tasks.filter((task) => (
+    ui.studentDetailSelection.has(task.id) && canEditTask(task)
+  ));
+  if (!selectedTasks.length) {
+    showToast('请先选择要修改的作业', 'check-square');
+    return;
+  }
+  try {
+    const savedRows = await Promise.all(selectedTasks.map((task) => {
+      const record = getRecord(task.id, studentId);
+      return cloud.saveRecord({
+        task_id: task.id,
+        student_id: studentId,
+        status: ui.studentDetailBatchStatus,
+        tag_ids: record.tags,
+        note: record.note
+      });
+    }));
+    savedRows.forEach((saved) => {
+      const record = getRecord(saved.task_id, studentId);
+      record.id = saved.id;
+      record.status = saved.status;
+      record.tags = saved.tag_ids || [];
+      record.note = saved.note || '';
+      record.updatedBy = saved.updated_by;
+    });
+    const count = selectedTasks.length;
+    ui.studentDetailBatchMode = false;
+    ui.studentDetailSelection.clear();
+    render();
+    openStudentDetail(studentId);
+    showToast(`已批量修改 ${count} 项作业为“${STATUS[ui.studentDetailBatchStatus].label}”`);
+  } catch (error) {
+    showToast(error.message || '批量修改失败，正在同步云端数据', 'alert');
+    await refreshCloudWorkspace(true);
+    openStudentDetail(studentId);
+  }
 }
 
 async function openCloudDiagnostics() {
@@ -2074,6 +2377,8 @@ function handleClick(event) {
       ui.selectedTaskId = actionElement.dataset.taskId;
       ui.query = '';
       ui.statusFilter = 'all';
+      ui.statusBatchMode = false;
+      clearStatusBatchSelection();
       navigate('register');
     },
     'evaluate': () => {
@@ -2089,14 +2394,45 @@ function handleClick(event) {
       ui.groupFilter = 'all';
       render();
     },
-    'toggle-names': () => {
-      ui.hideNames = !ui.hideNames;
+    'open-display-options': openDisplayOptions,
+    'set-student-display-mode': () => {
+      ui.studentDisplayMode = ['both', 'name', 'number'].includes(actionElement.dataset.mode)
+        ? actionElement.dataset.mode
+        : 'both';
+      persist();
+      closeModal();
       render();
-      showToast(ui.hideNames ? '姓名已隐藏，学号仍然保留' : '姓名已恢复显示', 'eye-off');
+      showToast(`学生展示方式已切换为${ui.studentDisplayMode === 'both' ? '姓名和学号' : ui.studentDisplayMode === 'name' ? '仅姓名' : '仅学号'}`);
     },
+    'toggle-status-batch': () => {
+      ui.statusBatchMode = !ui.statusBatchMode;
+      clearStatusBatchSelection();
+      render();
+    },
+    'toggle-status-batch-student': () => toggleStatusBatchStudent(actionElement.dataset.studentId),
+    'toggle-status-batch-group': () => toggleStatusBatchGroup(actionElement.dataset.groupId),
+    'select-visible-students': selectVisibleStudentsForBatch,
+    'clear-status-batch': () => {
+      clearStatusBatchSelection();
+      render();
+    },
+    'set-status-batch-value': () => {
+      ui.statusBatchStatus = STATUS[actionElement.dataset.status]
+        ? actionElement.dataset.status
+        : 'passed';
+      render();
+    },
+    'apply-status-batch': applyStatusBatch,
     'toggle-feedback-option': () => {
       const option = actionElement.dataset.option;
       ui.feedbackOptions[option] = !ui.feedbackOptions[option];
+      render();
+    },
+    'set-feedback-display-mode': () => {
+      ui.feedbackOptions.displayMode = ['name', 'number', 'count'].includes(actionElement.dataset.mode)
+        ? actionElement.dataset.mode
+        : 'name';
+      persist();
       render();
     },
     'copy-feedback': copyFeedback,
@@ -2108,7 +2444,28 @@ function handleClick(event) {
     },
     'student-profile': () => openStudentDetail(actionElement.dataset.studentId),
     'student-profile-from-modal': () => openStudentDetail(actionElement.dataset.studentId),
-    'cycle-student-task': () => cycleStudentTaskStatus(actionElement.dataset.studentId, actionElement.dataset.taskId),
+    'select-student-detail-task': () => {
+      ui.studentDetailSelectedTaskId = actionElement.dataset.taskId;
+      openStudentDetail(ui.studentDetailBatchStudentId);
+    },
+    'evaluate-selected': () => {
+      ui.studentDetailSelectedTaskId = actionElement.dataset.taskId;
+      openEvaluate(actionElement.dataset.studentId, actionElement.dataset.taskId, true);
+    },
+    'toggle-student-detail-batch': () => toggleStudentDetailBatch(actionElement.dataset.studentId),
+    'toggle-student-detail-task': () => toggleStudentDetailTask(actionElement.dataset.taskId),
+    'select-all-detail-tasks': () => selectAllEditableDetailTasks(actionElement.dataset.studentId),
+    'clear-detail-task-selection': () => {
+      ui.studentDetailSelection.clear();
+      openStudentDetail(ui.studentDetailBatchStudentId);
+    },
+    'set-detail-batch-status': () => {
+      ui.studentDetailBatchStatus = STATUS[actionElement.dataset.status]
+        ? actionElement.dataset.status
+        : 'passed';
+      openStudentDetail(ui.studentDetailBatchStudentId);
+    },
+    'apply-detail-batch': () => applyStudentDetailBatch(actionElement.dataset.studentId),
     'modal-status': () => {
       modalRoot.querySelectorAll('[data-action="modal-status"]').forEach((button) => button.classList.remove('is-active'));
       actionElement.classList.add('is-active');
@@ -2272,6 +2629,10 @@ async function handleSubmit(event) {
       record.updatedBy = saved.updated_by;
       closeModal();
       render();
+      if (form.dataset.returnDetail === 'true') {
+        ui.studentDetailSelectedTaskId = taskId;
+        openStudentDetail(studentId);
+      }
       showToast(`${getStudent(studentId)?.name || '学生'} 的作业状态已保存`);
     } catch (error) {
       if (submitButton) submitButton.disabled = false;
@@ -2542,6 +2903,12 @@ document.addEventListener('change', async (event) => {
 
   if (event.target.id === 'group-filter') {
     ui.groupFilter = event.target.value;
+    render();
+    return;
+  }
+
+  if (event.target.id === 'status-filter') {
+    ui.statusFilter = STATUS[event.target.value] ? event.target.value : 'all';
     render();
     return;
   }

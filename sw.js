@@ -1,6 +1,6 @@
 'use strict';
 
-const CACHE_NAME = 'zuoyeqing-v17';
+const CACHE_NAME = 'zuoyeqing-v21';
 const APP_SHELL = [
   './',
   './index.html',
